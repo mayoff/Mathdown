@@ -3,7 +3,7 @@
 #
 # Markdown -- A text-to-HTML conversion tool for web writers
 #
-# Copyright (c) 2004-2005 John Gruber
+# Copyright (c) 2004-2007 John Gruber
 # <http://daringfireball.net/projects/markdown/>
 #
 
@@ -15,8 +15,8 @@ use warnings;
 
 use Digest::MD5 qw(md5_hex);
 use vars qw($VERSION);
-$VERSION = '1.0.2b7';
-# Tue 29 Aug 2006
+$VERSION = '1.0.2b8';
+# Wed 09 May 2007
 
 ## Disabled; causes problems under Perl 5.6.1:
 # use utf8;
@@ -33,9 +33,9 @@ my $g_tab_width = 4;
 # Globals:
 #
 
-# Regex to match balanced [brackets]. See Friedl's
-# "Mastering Regular Expressions", 2nd Ed., pp. 328-331.
-my $g_nested_brackets;
+# Reusable patterns to match balanced [brackets] and (parens). See
+# Friedl's "Mastering Regular Expressions", 2nd Ed., pp. 328-331.
+my ($g_nested_brackets, $g_nested_parens);
 $g_nested_brackets = qr{
 	(?> 								# Atomic matching
 	   [^\[\]]+							# Anything other than brackets
@@ -43,6 +43,17 @@ $g_nested_brackets = qr{
 	   \[
 		 (??{ $g_nested_brackets })		# Recursive set of nested brackets
 	   \]
+	)*
+}x;
+
+# Doesn't allow for whitespace, because we're using it to match URLs:
+$g_nested_parens = qr{
+	(?> 								# Atomic matching
+	   [^()\s]+							# Anything other than parens or whitespace
+	 | 
+	   \(
+		 (??{ $g_nested_parens })		# Recursive set of nested brackets
+	   \)
 	)*
 }x;
 
@@ -333,9 +344,11 @@ sub _HashHTMLBlocks {
 											# before each attribute name.
 							[\w.:_-]+		# Attribute name
 							\s*=\s*
-							(["'])			# Attribute quoter
-							.+?				# Attribute value
-							\1				# Closing quoter
+							(?:
+								".+?"		# "Attribute value"
+							 |
+								'.+?'		# 'Attribute value'
+							)
 						)*				# Zero or more
 					}x;
 
@@ -598,7 +611,7 @@ sub _DoAnchors {
 		  \]
 		  \(			# literal paren
 		  	[ \t]*
-			<?(.*?)>?	# href = $3
+			($g_nested_parens)		# href = $3
 		  	[ \t]*
 			(			# $4
 			  (['"])	# quote char = $5
@@ -617,6 +630,7 @@ sub _DoAnchors {
 
 		$url =~ s! \* !$g_escape_table{'*'}!gx;		# We've got to encode these to avoid
 		$url =~ s!  _ !$g_escape_table{'_'}!gx;		# conflicting with italics/bold.
+		$url =~ s{^<(.*)>$}{$1};					# Remove <>'s surrounding URL, if present
 		$result = "<a href=\"$url\"";
 
 		if (defined $title) {
@@ -738,7 +752,7 @@ sub _DoImages {
 		  \s?			# One optional whitespace character
 		  \(			# literal paren
 		  	[ \t]*
-			<?(\S+?)>?	# src url = $3
+			($g_nested_parens)		# href = $3
 		  	[ \t]*
 			(			# $4
 			  (['"])	# quote char = $5
@@ -753,15 +767,13 @@ sub _DoImages {
 		my $whole_match = $1;
 		my $alt_text    = $2;
 		my $url	  		= $3;
-		my $title		= '';
-		if (defined($6)) {
-			$title		= $6;
-		}
+		my $title		= (defined $6) ? $6 : '';
 
 		$alt_text =~ s/"/&quot;/g;
 		$title    =~ s/"/&quot;/g;
 		$url =~ s! \* !$g_escape_table{'*'}!gx;		# We've got to encode these to avoid
 		$url =~ s!  _ !$g_escape_table{'_'}!gx;		# conflicting with italics/bold.
+		$url =~ s{^<(.*)>$}{$1};					# Remove <>'s surrounding URL, if present
 		$result = "<img src=\"$url\" alt=\"$alt_text\"";
 		if (defined $title) {
 			$title =~ s! \* !$g_escape_table{'*'}!gx;
@@ -787,11 +799,11 @@ sub _DoHeaders {
 	#	  Header 2
 	#	  --------
 	#
-	$text =~ s{ ^(.+)[ \t]*\n=+[ \t]*\n+ }{
+	$text =~ s{ ^(.+?)[ \t]*\n=+[ \t]*\n+ }{
 		"<h1>"  .  _RunSpanGamut($1)  .  "</h1>\n\n";
 	}egmx;
 
-	$text =~ s{ ^(.+)[ \t]*\n-+[ \t]*\n+ }{
+	$text =~ s{ ^(.+?)[ \t]*\n-+[ \t]*\n+ }{
 		"<h2>"  .  _RunSpanGamut($1)  .  "</h2>\n\n";
 	}egmx;
 
@@ -1513,6 +1525,23 @@ you expected; (3) the output Markdown actually produced.
 =head1 VERSION HISTORY
 
 See the readme file for detailed release notes for this version.
+
+1.0.2b8 - Wed 09 May 2007
+
+	+	Fixed bug with nested raw HTML tags that contained
+		attributes. The problem is that it uses a backreference in
+		the expression that it passes to gen_extract_tagged, which
+		is broken when Text::Balanced wraps it in parentheses.
+
+		Thanks to Matt Kraai for the patch.
+	
+	+	Now supports URLs containing literal parentheses, such as:
+	
+			http://en.wikipedia.org/wiki/WIMP_(computing)
+		
+		Such parentheses may be arbitrarily nested, but must be
+		balanced.
+
 
 1.0.2b7
 
