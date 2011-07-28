@@ -1,7 +1,7 @@
 Markdown
 ========
 
-Version 1.0.1 - Tue 14 Dec 2004
+Version 1.0.2b7 - Tue 29 Aug 2006
 
 by John Gruber  
 <http://daringfireball.net/>
@@ -32,7 +32,9 @@ Installation and Requirements
 -----------------------------
 
 Markdown requires Perl 5.6.0 or later. Welcome to the 21st Century.
-Markdown also requires the standard Perl library module `Digest::MD5`. 
+Markdown also requires the standard Perl library modules `Digest::MD5`
+and `Text::Balanced`, both of which are included in the core library 
+with Perl 5.8 or later, and are on CPAN for older versions of Perl.
 
 
 ### Movable Type ###
@@ -168,6 +170,15 @@ To file bug reports or feature requests please send email to:
 
 Version History
 ---------------
+
+1.0.2b1 (Mon 28 Feb 2005)
+
++	Fix for backticks within HTML tag: <span attr='`ticks`'>like this</span>
+
++	Fix for escaped backticks still triggering code spans:
+
+		There are two raw backticks here: \` and here: \`, not a code span
+
 
 1.0.1 (14 Dec 2004):
 
@@ -309,7 +320,7 @@ Donations to support Markdown's development are happily accepted. See:
 Copyright and License
 ---------------------
 
-Copyright (c) 2003-2004 John Gruber   
+Copyright (c) 2003-2006 John Gruber   
 <http://daringfireball.net/>   
 All rights reserved.
 

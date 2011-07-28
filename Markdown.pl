@@ -1,9 +1,9 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 
 #
 # Markdown -- A text-to-HTML conversion tool for web writers
 #
-# Copyright (c) 2004 John Gruber
+# Copyright (c) 2004-2005 John Gruber
 # <http://daringfireball.net/projects/markdown/>
 #
 
@@ -15,13 +15,12 @@ use warnings;
 
 use Digest::MD5 qw(md5_hex);
 use vars qw($VERSION);
-$VERSION = '1.0.1';
-# Tue 14 Dec 2004
+$VERSION = '1.0.2b7';
+# Tue 29 Aug 2006
 
 ## Disabled; causes problems under Perl 5.6.1:
 # use utf8;
 # binmode( STDOUT, ":utf8" );  # c.f.: http://acis.openlib.org/dev/perl-unicode-struggle.html
-
 
 #
 # Global default settings:
@@ -227,7 +226,7 @@ sub Markdown {
 #
 # Main function. The order in which other subs are called here is
 # essential. Link and image substitutions need to happen before
-# _EscapeSpecialChars(), so that any *'s or _'s in the <a>
+# _EscapeSpecialCharsWithinTagAttributes(), so that any *'s or _'s in the <a>
 # and <img> tags get encoded.
 #
 	my $text = shift;
@@ -320,55 +319,66 @@ sub _HashHTMLBlocks {
 	# "paragraphs" that are wrapped in non-block-level tags, such as anchors,
 	# phrase emphasis, and spans. The list of tags we're looking for is
 	# hard-coded:
-	my $block_tags_a = qr/p|div|h[1-6]|blockquote|pre|table|dl|ol|ul|script|noscript|form|fieldset|iframe|math|ins|del/;
-	my $block_tags_b = qr/p|div|h[1-6]|blockquote|pre|table|dl|ol|ul|script|noscript|form|fieldset|iframe|math/;
+	my $block_tags = qr{
+		  (?:
+			p         |  div     |  h[1-6]  |  blockquote  |  pre       |  table  |
+			dl        |  ol      |  ul      |  script      |  noscript  |  form   |
+			fieldset  |  iframe  |  math    |  ins         |  del
+		  )
+		}x;
 
-	# First, look for nested blocks, e.g.:
-	# 	<div>
-	# 		<div>
-	# 		tags for inner block must be indented.
-	# 		</div>
-	# 	</div>
-	#
-	# The outermost tags must start at the left margin for this to match, and
-	# the inner nested divs must be indented.
-	# We need to do this before the next, more liberal match, because the next
-	# match will start at the first `<div>` and stop at the first `</div>`.
-	$text =~ s{
-				(						# save in $1
-					^					# start of line  (with /m)
-					<($block_tags_a)	# start tag = $2
-					\b					# word break
-					(.*\n)*?			# any number of lines, minimally matching
-					</\2>				# the matching end tag
-					[ \t]*				# trailing spaces/tabs
-					(?=\n+|\Z)	# followed by a newline or end of document
-				)
-			}{
-				my $key = md5_hex($1);
-				$g_html_blocks{$key} = $1;
-				"\n\n" . $key . "\n\n";
-			}egmx;
+	my $tag_attrs = qr{
+						(?:				# Match one attr name/value pair
+							\s+				# There needs to be at least some whitespace
+											# before each attribute name.
+							[\w.:_-]+		# Attribute name
+							\s*=\s*
+							(["'])			# Attribute quoter
+							.+?				# Attribute value
+							\1				# Closing quoter
+						)*				# Zero or more
+					}x;
+
+	my $empty_tag = qr{< \w+ $tag_attrs \s* />}xms;
+	my $open_tag =  qr{< $block_tags $tag_attrs \s* >}xms;
+	my $close_tag = undef;	# let Text::Balanced handle this
+
+	use Text::Balanced qw(gen_extract_tagged);
+	my $extract_block = gen_extract_tagged($open_tag, $close_tag, undef, { ignore => [$empty_tag] });
+
+	my @chunks;
+	## TO-DO: the 0,3 on the next line ought to respect the
+	## tabwidth, or else, we should mandate 4-space tabwidth and
+	## be done with it:
+	while ($text =~ s{^(([ ]{0,3}<)?.*\n)}{}m) {
+		my $cur_line = $1;
+		if (defined $2) {
+			# current line could be start of code block
+
+			my ($tag, $remainder) = $extract_block->($cur_line . $text);
+			if ($tag) {
+				my $key = md5_hex($tag);
+				$g_html_blocks{$key} = $tag;
+				push @chunks, "\n\n" . $key . "\n\n";
+				$text = $remainder;
+			}
+			else {
+				# No tag match, so toss $cur_line into @chunks
+				push @chunks, $cur_line;
+			}
+		}
+		else {
+			# current line could NOT be start of code block
+			push @chunks, $cur_line;
+		}
+
+	}
+	push @chunks, $text; # Whatever is left.
+
+	$text = join '', @chunks;
 
 
-	#
-	# Now match more liberally, simply from `\n<tag>` to `</tag>\n`
-	#
-	$text =~ s{
-				(						# save in $1
-					^					# start of line  (with /m)
-					<($block_tags_b)	# start tag = $2
-					\b					# word break
-					(.*\n)*?			# any number of lines, minimally matching
-					.*</\2>				# the matching end tag
-					[ \t]*				# trailing spaces/tabs
-					(?=\n+|\Z)	# followed by a newline or end of document
-				)
-			}{
-				my $key = md5_hex($1);
-				$g_html_blocks{$key} = $1;
-				"\n\n" . $key . "\n\n";
-			}egmx;
+
 	# Special case just for <hr />. It was easier to make a special case than
 	# to make the other regex more complicated.	
 	$text =~ s{
@@ -415,6 +425,29 @@ sub _HashHTMLBlocks {
 				"\n\n" . $key . "\n\n";
 			}egx;
 
+	# PHP and ASP-style processor instructions (<?…?> and <%…%>)
+	$text =~ s{
+				(?:
+					(?<=\n\n)		# Starting after a blank line
+					|				# or
+					\A\n?			# the beginning of the doc
+				)
+				(						# save in $1
+					[ ]{0,$less_than_tab}
+					(?s:
+						<([?%])			# $2
+						.*?
+						\2>
+					)
+					[ \t]*
+					(?=\n{2,}|\Z)		# followed by a blank line or end of document
+				)
+			}{
+				my $key = md5_hex($1);
+				$g_html_blocks{$key} = $1;
+				"\n\n" . $key . "\n\n";
+			}egx;
+
 
 	return $text;
 }
@@ -435,9 +468,7 @@ sub _RunBlockGamut {
 	$text =~ s{^[ ]{0,2}([ ]? _[ ]?){3,}[ \t]*$}{\n<hr$g_empty_element_suffix\n}gmx;
 
 	$text = _DoLists($text);
-
 	$text = _DoCodeBlocks($text);
-
 	$text = _DoBlockQuotes($text);
 
 	# We already ran _HashHTMLBlocks() before, in Markdown(), but that
@@ -445,7 +476,6 @@ sub _RunBlockGamut {
 	# we're escaping the markup we've just created, so that we don't wrap
 	# <p> tags around block-level tags.
 	$text = _HashHTMLBlocks($text);
-
 	$text = _FormParagraphs($text);
 
 	return $text;
@@ -460,8 +490,8 @@ sub _RunSpanGamut {
 	my $text = shift;
 
 	$text = _DoCodeSpans($text);
-
-	$text = _EscapeSpecialChars($text);
+	$text = _EscapeSpecialCharsWithinTagAttributes($text);
+	$text = _EncodeBackslashEscapes($text);
 
 	# Process anchor and image tags. Images must come first,
 	# because ![foo][f] looks like an anchor.
@@ -472,9 +502,7 @@ sub _RunSpanGamut {
 	# Must come after _DoAnchors(), because you can use < and >
 	# delimiters in inline links like [this](<url>).
 	$text = _DoAutoLinks($text);
-
 	$text = _EncodeAmpsAndAngles($text);
-
 	$text = _DoItalicsAndBold($text);
 
 	# Do hard breaks:
@@ -484,30 +512,26 @@ sub _RunSpanGamut {
 }
 
 
-sub _EscapeSpecialChars {
+sub _EscapeSpecialCharsWithinTagAttributes {
+#
+# Within tags -- meaning between < and > -- encode [\ ` * _] so they
+# don't conflict with their use in Markdown for code, italics and strong.
+# We're replacing each such character with its corresponding MD5 checksum
+# value; this is likely overkill, but it should prevent us from colliding
+# with the escape values by accident.
+#
 	my $text = shift;
 	my $tokens ||= _TokenizeHTML($text);
-
 	$text = '';   # rebuild $text from the tokens
-# 	my $in_pre = 0;	 # Keep track of when we're inside <pre> or <code> tags.
-# 	my $tags_to_skip = qr!<(/?)(?:pre|code|kbd|script|math)[\s>]!;
 
 	foreach my $cur_token (@$tokens) {
 		if ($cur_token->[0] eq "tag") {
-			# Within tags, encode * and _ so they don't conflict
-			# with their use in Markdown for italics and strong.
-			# We're replacing each such character with its
-			# corresponding MD5 checksum value; this is likely
-			# overkill, but it should prevent us from colliding
-			# with the escape values by accident.
+			$cur_token->[1] =~  s! \\ !$g_escape_table{'\\'}!gx;
+			$cur_token->[1] =~  s{ (?<=.)</?code>(?=.)  }{$g_escape_table{'`'}}gx;
 			$cur_token->[1] =~  s! \* !$g_escape_table{'*'}!gx;
 			$cur_token->[1] =~  s! _  !$g_escape_table{'_'}!gx;
-			$text .= $cur_token->[1];
-		} else {
-			my $t = $cur_token->[1];
-			$t = _EncodeBackslashEscapes($t);
-			$text .= $t;
 		}
+		$text .= $cur_token->[1];
 	}
 	return $text;
 }
@@ -580,6 +604,7 @@ sub _DoAnchors {
 			  (['"])	# quote char = $5
 			  (.*?)		# Title = $6
 			  \5		# matching quote
+  		  	  [ \t]*	# ignore any spaces/tabs between closing quote and )
 			)?			# title is optional
 		  \)
 		)
@@ -603,6 +628,42 @@ sub _DoAnchors {
 
 		$result .= ">$link_text</a>";
 
+		$result;
+	}xsge;
+
+	#
+	# Last, handle reference-style shortcuts: [link text]
+	# These must come last in case you've also got [link test][1]
+	# or [link test](/foo)
+	#
+	$text =~ s{
+		(					# wrap whole match in $1
+		  \[
+		    ([^\[\]]+)		# link text = $2; can't contain '[' or ']'
+		  \]
+		)
+	}{
+		my $result;
+		my $whole_match = $1;
+		my $link_text   = $2;
+		(my $link_id = lc $2) =~ s{[ ]?\n}{ }g; # lower-case and turn embedded newlines into spaces
+
+		if (defined $g_urls{$link_id}) {
+			my $url = $g_urls{$link_id};
+			$url =~ s! \* !$g_escape_table{'*'}!gx;		# We've got to encode these to avoid
+			$url =~ s!  _ !$g_escape_table{'_'}!gx;		# conflicting with italics/bold.
+			$result = "<a href=\"$url\"";
+			if ( defined $g_titles{$link_id} ) {
+				my $title = $g_titles{$link_id};
+				$title =~ s! \* !$g_escape_table{'*'}!gx;
+				$title =~ s!  _ !$g_escape_table{'_'}!gx;
+				$result .=  " title=\"$title\"";
+			}
+			$result .= ">$link_text</a>";
+		}
+		else {
+			$result = $whole_match;
+		}
 		$result;
 	}xsge;
 
@@ -674,6 +735,7 @@ sub _DoImages {
 		  !\[
 		    (.*?)		# alt text = $2
 		  \]
+		  \s?			# One optional whitespace character
 		  \(			# literal paren
 		  	[ \t]*
 			<?(\S+?)>?	# src url = $3
@@ -806,7 +868,7 @@ sub _DoLists {
 	# admit. My only guess, backed up by the fact that this workaround works,
 	# is that Perl optimizes the substition when it can figure out that the
 	# pattern will never change, and when this optimization isn't on, we run
-	# afoul of the reaper. Thus, the slightly redundant code to that uses two
+	# afoul of the reaper. Thus, the slightly redundant code that uses two
 	# static s/// patterns rather than one conditional pattern.
 
 	if ($g_list_level) {
@@ -816,11 +878,18 @@ sub _DoLists {
 			}{
 				my $list = $1;
 				my $list_type = ($3 =~ m/$marker_ul/) ? "ul" : "ol";
+
 				# Turn double returns into triple returns, so that we can make a
 				# paragraph for the last item in a list, if necessary:
 				$list =~ s/\n{2,}/\n\n\n/g;
 				my $result = _ProcessListItems($list, $marker_any);
-				$result = "<$list_type>\n" . $result . "</$list_type>\n";
+
+				# Trim any trailing whitespace, to put the closing `</$list_type>`
+				# up on the preceding line, to get it past the current stupid
+				# HTML block parser. This is a hack to work around the terrible
+				# hack that is the HTML block parser.
+				$result =~ s{\s+$}{};
+				$result = "<$list_type>" . $result . "</$list_type>\n";
 				$result;
 			}egmx;
 	}
@@ -936,7 +1005,7 @@ sub _DoCodeBlocks {
 			$codeblock = _EncodeCode(_Outdent($codeblock));
 			$codeblock = _Detab($codeblock);
 			$codeblock =~ s/\A\n+//; # trim leading newlines
-			$codeblock =~ s/\s+\z//; # trim trailing whitespace
+			$codeblock =~ s/\n+\z//; # trim trailing newlines
 
 			$result = "\n\n<pre><code>" . $codeblock . "\n</code></pre>\n\n";
 
@@ -976,6 +1045,7 @@ sub _DoCodeSpans {
 	my $text = shift;
 
 	$text =~ s@
+			(?<!\\)		# Character before opening ` can't be a backslash
 			(`+)		# $1 = Opening run of `
 			(.+?)		# $2 = The code block
 			(?<!`)
@@ -1109,11 +1179,54 @@ sub _FormParagraphs {
 	#
 	# Unhashify HTML blocks
 	#
-	foreach (@grafs) {
-		if (defined( $g_html_blocks{$_} )) {
-			$_ = $g_html_blocks{$_};
+# 	foreach my $graf (@grafs) {
+# 		my $block = $g_html_blocks{$graf};
+# 		if (defined $block) {
+# 			$graf = $block;
+# 		}
+# 	}
+
+	foreach my $graf (@grafs) {
+		# Modify elements of @grafs in-place...
+		my $block = $g_html_blocks{$graf};
+		if (defined $block) {
+			$graf = $block;
+			if ($block =~ m{
+							\A
+							(							# $1 = <div> tag
+							  <div  \s+
+							  [^>]*
+							  \b
+							  markdown\s*=\s*  (['"])	#	$2 = attr quote char
+							  1
+							  \2
+							  [^>]*
+							  >
+							)
+							(							# $3 = contents
+							.*
+							)
+							(</div>)					# $4 = closing tag
+							\z
+
+							}xms
+				) {
+				my ($div_open, $div_content, $div_close) = ($1, $3, $4);
+
+				# We can't call Markdown(), because that resets the hash;
+				# that initialization code should be pulled into its own sub, though.
+				$div_content = _HashHTMLBlocks($div_content);
+				$div_content = _StripLinkDefinitions($div_content);
+				$div_content = _RunBlockGamut($div_content);
+				$div_content = _UnescapeSpecialChars($div_content);
+
+				$div_open =~ s{\smarkdown\s*=\s*(['"]).+?\1}{}ms;
+
+				$graf = $div_open . "\n" . $div_content . "\n" . $div_close;
+			}
 		}
 	}
+
 
 	return join "\n\n", @grafs;
 }
@@ -1167,7 +1280,7 @@ sub _EncodeBackslashEscapes {
 sub _DoAutoLinks {
 	my $text = shift;
 
-	$text =~ s{<((https?|ftp):[^'">\s]+)>}{<a href="$1">$1</a>}gi;
+	$text =~ s{<((https?|ftp|dict):[^'">\s]+)>}{<a href="$1">$1</a>}gi;
 
 	# Email addresses: <address@domain.foo>
 	$text =~ s{
@@ -1289,7 +1402,8 @@ sub _TokenizeHTML {
         $pos = pos $str;
     }
     push @tokens, ['text', substr($str, $pos, $len - $pos)] if $pos < $len;
-    \@tokens;
+
+    return \@tokens;
 }
 
 
@@ -1400,6 +1514,84 @@ you expected; (3) the output Markdown actually produced.
 
 See the readme file for detailed release notes for this version.
 
+1.0.2b7
+
+	+	Changed shebang line from "/usr/bin/perl" to "/usr/bin/env perl"
+	
+	+	Now only trim trailing newlines from code blocks, instead of trimming
+		all trailing whitespace characters.
+
+
+1.0.2b6 - Mon 03 Apr 2006
+
+	+	Fixed bad performance bug in new `Text::Balanced`-based block-level parser.
+
+
+1.0.2b5 - Thu 08 Dec 2005
+
+	+	Fixed bug where this:
+	
+			[text](http://m.com "title" )
+			
+		wasn't working as expected, because the parser wasn't allowing for spaces
+		before the closing paren.
+
+
+1.0.2b4 - Thu 08 Sep 2005
+
+	+	Filthy hack to support markdown='1' in div tags, because I need it
+		to write today's fireball.
+	
+	+	First crack at a new, smarter, block-level HTML parser.
+
+1.0.2b3 - Thu 28 Apr 2005
+
+	+	_DoAutoLinks() now supports the 'dict://' URL scheme.
+
+	+	PHP- and ASP-style processor instructions are now protected as
+		raw HTML blocks.
+
+			<? ... ?>
+			<% ... %>
+
+	+	Workarounds for regressions introduced with fix for "backticks within
+		tags" bug in 1.0.2b1. The fix is to allow `...` to be turned into
+		<code>...</code> within an HTML tag attribute, and then to turn
+		these spurious `<code>` tags back into literal backtick characters
+		in _EscapeSpecialCharsWithinTagAttributes().
+
+		The regression was caused because in the fix, we moved
+		_EscapeSpecialCharsWithinTagAttributes() ahead of _DoCodeSpans()
+		in _RunSpanGamut(), but that's no good. We need to process code
+		spans first, otherwise we can get tripped up by something like this:
+
+			`<test a="` content of attribute `">`
+
+
+1.0.2b2 - 20 Mar 2005
+
+	+	Fix for nested sub-lists in list-paragraph mode. Previously we got
+		a spurious extra level of `<p>` tags for something like this:
+
+			*	this
+
+				*	sub
+
+				that
+
+	+	Experimental support for [this] as a synonym for [this][].
+		(Note to self: No test yet for this.)
+		Be sure to test, e.g.: [permutations of this sort of [thing][].]
+
+
+1.0.2b1 - 28  Feb 2005
+
+	+	Fix for backticks within HTML tag: <span attr='`ticks`'>like this</span>
+
+	+	Fix for escaped backticks still triggering code spans:
+
+			There are two raw backticks here: \` and here: \`, not a code span
+
 1.0.1 - 14 Dec 2004
 
 1.0 - 28 Aug 2004
@@ -1416,7 +1608,7 @@ See the readme file for detailed release notes for this version.
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (c) 2003-2004 John Gruber   
+Copyright (c) 2003-2005 John Gruber   
 <http://daringfireball.net/>   
 All rights reserved.
 
