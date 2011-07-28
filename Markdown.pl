@@ -69,6 +69,7 @@ foreach my $char (split //, '\\`*_{}[]()>#+-.!') {
 my %g_urls;
 my %g_titles;
 my %g_html_blocks;
+my %g_mathjax_sections;
 
 # Used to track when we're inside an ordered or unordered list
 # (see _ProcessListItems() for details):
@@ -267,6 +268,9 @@ sub Markdown {
 	# contorted like /[ \t]*\n+/ .
 	$text =~ s/^[ \t]+$//mg;
 
+	# Hide all MathJax input.
+	$text = _HideMathJax($text);
+
 	# Turn block-level HTML blocks into hash entries
 	$text = _HashHTMLBlocks($text);
 
@@ -276,6 +280,8 @@ sub Markdown {
 	$text = _RunBlockGamut($text);
 
 	$text = _UnescapeSpecialChars($text);
+
+	$text = _RestoreMathJax($text);
 
 	return $text . "\n";
 }
@@ -317,6 +323,36 @@ sub _StripLinkDefinitions {
 	}
 
 	return $text;
+}
+
+
+sub _HideMathJax {
+  my $text = shift;
+  $text =~ s{
+    (\$\$?).*?\1
+  }{
+    _StashMathJax($&)
+  }gxse;
+  return $text;
+}
+
+
+sub _StashMathJax {
+  my $mathjax = shift;
+  my $key = md5_hex($mathjax);
+  $g_mathjax_sections{$key} = $mathjax;
+  return '$' . $key . '$';
+}
+
+
+sub _RestoreMathJax {
+  my $text = shift;
+  $text =~ s{
+    \$(.*?)\$
+  }{
+    $g_mathjax_sections{$1}
+  }gxse;
+  return $text;
 }
 
 
