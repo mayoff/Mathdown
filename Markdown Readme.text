@@ -1,7 +1,7 @@
 Markdown
 ========
 
-Version 1.0 - Fri 20 Aug 2004
+Version 1.0.1 - Tue 14 Dec 2004
 
 by John Gruber  
 <http://daringfireball.net/>
@@ -15,11 +15,12 @@ allows you to write using an easy-to-read, easy-to-write plain text
 format, then convert it to structurally valid XHTML (or HTML).
 
 Thus, "Markdown" is two things: a plain text markup syntax, and a
-software tool, written in Perl, that converts the plain text markup to HTML.
+software tool, written in Perl, that converts the plain text markup 
+to HTML.
 
 Markdown works both as a Movable Type plug-in and as a standalone Perl
-script -- which means it can also be used as a text filter in BBEdit (or
-any other application that supporst filters written in Perl).
+script -- which means it can also be used as a text filter in BBEdit
+(or any other application that supporst filters written in Perl).
 
 Full documentation of Markdown's syntax and configuration options is
 available on the web: <http://daringfireball.net/projects/markdown/>.
@@ -31,7 +32,7 @@ Installation and Requirements
 -----------------------------
 
 Markdown requires Perl 5.6.0 or later. Welcome to the 21st Century.
-Markdown also requires the standard Perl library module Digest::MD5. 
+Markdown also requires the standard Perl library module `Digest::MD5`. 
 
 
 ### Movable Type ###
@@ -156,11 +157,152 @@ Type `perldoc Markdown.pl`, or read the POD documentation within the
 Markdown.pl source code for more information.
 
 
+
 Bugs
 ----
 
 To file bug reports or feature requests please send email to:
 <markdown@daringfireball.net>.
+
+
+
+Version History
+---------------
+
+1.0.1 (14 Dec 2004):
+
++	Changed the syntax rules for code blocks and spans. Previously,
+	backslash escapes for special Markdown characters were processed
+	everywhere other than within inline HTML tags. Now, the contents
+	of code blocks and spans are no longer processed for backslash
+	escapes. This means that code blocks and spans are now treated
+	literally, with no special rules to worry about regarding
+	backslashes.
+
+	**NOTE**: This changes the syntax from all previous versions of
+	Markdown. Code blocks and spans involving backslash characters
+	will now generate different output than before.
+
++	Tweaked the rules for link definitions so that they must occur
+	within three spaces of the left margin. Thus if you indent a link
+	definition by four spaces or a tab, it will now be a code block.
+	
+		   [a]: /url/  "Indented 3 spaces, this is a link def"
+
+		    [b]: /url/  "Indented 4 spaces, this is a code block"
+	
+	**IMPORTANT**: This may affect existing Markdown content if it
+	contains link definitions indented by 4 or more spaces.
+
++	Added `>`, `+`, and `-` to the list of backslash-escapable
+	characters. These should have been done when these characters
+	were added as unordered list item markers.
+
++	Trailing spaces and tabs following HTML comments and `<hr/>` tags
+	are now ignored.
+
++	Inline links using `<` and `>` URL delimiters weren't working:
+
+		like [this](<http://example.com/>)
+
++	Added a bit of tolerance for trailing spaces and tabs after
+	Markdown hr's.
+
++	Fixed bug where auto-links were being processed within code spans:
+
+		like this: `<http://example.com/>`
+
++	Sort-of fixed a bug where lines in the middle of hard-wrapped
+	paragraphs, which lines look like the start of a list item,
+	would accidentally trigger the creation of a list. E.g. a
+	paragraph that looked like this:
+
+		I recommend upgrading to version
+		8. Oops, now this line is treated
+		as a sub-list.
+
+	This is fixed for top-level lists, but it can still happen for
+	sub-lists. E.g., the following list item will not be parsed
+	properly:
+
+		+	I recommend upgrading to version
+			8. Oops, now this line is treated
+			as a sub-list.
+
+	Given Markdown's list-creation rules, I'm not sure this can
+	be fixed.
+
++	Standalone HTML comments are now handled; previously, they'd get
+	wrapped in a spurious `<p>` tag.
+
++	Fix for horizontal rules preceded by 2 or 3 spaces.
+
++	`<hr>` HTML tags in must occur within three spaces of left
+	margin. (With 4 spaces or a tab, they should be code blocks, but
+	weren't before this fix.)
+
++	Capitalized "With" in "Markdown With SmartyPants" for
+	consistency with the same string label in SmartyPants.pl.
+	(This fix is specific to the MT plug-in interface.)
+
++	Auto-linked email address can now optionally contain
+	a 'mailto:' protocol. I.e. these are equivalent:
+
+		<mailto:user@example.com>
+		<user@example.com>
+
++	Fixed annoying bug where nested lists would wind up with
+	spurious (and invalid) `<p>` tags.
+
++	You can now write empty links:
+
+		[like this]()
+
+	and they'll be turned into anchor tags with empty href attributes.
+	This should have worked before, but didn't.
+
++	`***this***` and `___this___` are now turned into
+
+		<strong><em>this</em></strong>
+
+	Instead of
+
+		<strong><em>this</strong></em>
+
+	which isn't valid. (Thanks to Michel Fortin for the fix.)
+
++	Added a new substitution in `_EncodeCode()`: s/\$/&#036;/g; This
+	is only for the benefit of Blosxom users, because Blosxom
+	(sometimes?) interpolates Perl scalars in your article bodies.
+
++	Fixed problem for links defined with urls that include parens, e.g.:
+
+		[1]: http://sources.wikipedia.org/wiki/Middle_East_Policy_(Chomsky)
+
+	"Chomsky" was being erroneously treated as the URL's title.
+
++	At some point during 1.0's beta cycle, I changed every sub's
+	argument fetching from this idiom:
+
+		my $text = shift;
+
+	to:
+
+		my $text = shift || return '';
+
+	The idea was to keep Markdown from doing any work in a sub
+	if the input was empty. This introduced a bug, though:
+	if the input to any function was the single-character string
+	"0", it would also evaluate as false and return immediately.
+	How silly. Now fixed.
+
+
+
+Donations
+---------
+
+Donations to support Markdown's development are happily accepted. See:
+<http://daringfireball.net/projects/markdown/> for details.
 
 
 
@@ -171,17 +313,29 @@ Copyright (c) 2003-2004 John Gruber
 <http://daringfireball.net/>   
 All rights reserved.
 
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
 
-Markdown is free software; you may redistribute it and/or modify it
-under the terms of the GNU General Public License as published by the
-Free Software Foundation; either version 2 of the License, or (at your
-option) any later version.
+* Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
 
-Donations to support Markdown's development are happily accepted. See:
-<http://daringfireball.net/projects/markdown/> for details.
+* Redistributions in binary form must reproduce the above copyright
+  notice, this list of conditions and the following disclaimer in the
+  documentation and/or other materials provided with the distribution.
 
-Markdown is distributed in the hope that it will be useful, but without
-any warranty; without even the implied warranty of merchantability or
-fitness for a particular purpose. See the GNU General Public License
-for more details.
+* Neither the name "Markdown" nor the names of its contributors may
+  be used to endorse or promote products derived from this software
+  without specific prior written permission.
 
+This software is provided by the copyright holders and contributors "as
+is" and any express or implied warranties, including, but not limited
+to, the implied warranties of merchantability and fitness for a
+particular purpose are disclaimed. In no event shall the copyright owner
+or contributors be liable for any direct, indirect, incidental, special,
+exemplary, or consequential damages (including, but not limited to,
+procurement of substitute goods or services; loss of use, data, or
+profits; or business interruption) however caused and on any theory of
+liability, whether in contract, strict liability, or tort (including
+negligence or otherwise) arising in any way out of the use of this
+software, even if advised of the possibility of such damage.

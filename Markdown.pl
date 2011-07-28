@@ -15,8 +15,8 @@ use warnings;
 
 use Digest::MD5 qw(md5_hex);
 use vars qw($VERSION);
-$VERSION = '1.0';
-# Fri 20 Aug 2004
+$VERSION = '1.0.1';
+# Tue 14 Dec 2004
 
 ## Disabled; causes problems under Perl 5.6.1:
 # use utf8;
@@ -50,7 +50,7 @@ $g_nested_brackets = qr{
 
 # Table of hash values for escaped characters:
 my %g_escape_table;
-foreach my $char (split //, '\\`*_{}[]()#.!') {
+foreach my $char (split //, '\\`*_{}[]()>#+-.!') {
 	$g_escape_table{$char} = md5_hex($char);
 }
 
@@ -60,6 +60,9 @@ my %g_urls;
 my %g_titles;
 my %g_html_blocks;
 
+# Used to track when we're inside an ordered or unordered list
+# (see _ProcessListItems() for details):
+my $g_list_level = 0;
 
 
 #### Blosxom plug-in interface ##########################################
@@ -155,7 +158,7 @@ unless ($@) {
 
 	if ($smartypants) {
 		MT->add_text_filter('markdown_with_smartypants' => {
-			label     => 'Markdown with SmartyPants',
+			label     => 'Markdown With SmartyPants',
 			docs      => 'http://daringfireball.net/projects/markdown/',
 			on_format => sub {
 				my $text = shift;
@@ -227,7 +230,7 @@ sub Markdown {
 # _EscapeSpecialChars(), so that any *'s or _'s in the <a>
 # and <img> tags get encoded.
 #
-	my $text = shift || return '';
+	my $text = shift;
 
 	# Clear the global hashes. If we don't clear these, you get conflicts
 	# from other articles when generating a page which contains more than
@@ -260,10 +263,6 @@ sub Markdown {
 	# Strip link definitions, store in hashes.
 	$text = _StripLinkDefinitions($text);
 
-	# _EscapeSpecialChars() must be called very early, to get
-	# backslash escapes processed.
-	$text = _EscapeSpecialChars($text);
-
 	$text = _RunBlockGamut($text);
 
 	$text = _UnescapeSpecialChars($text);
@@ -277,11 +276,12 @@ sub _StripLinkDefinitions {
 # Strips link definitions from text, stores the URLs and titles in
 # hash references.
 #
-	my $text = shift || return '';
+	my $text = shift;
+	my $less_than_tab = $g_tab_width - 1;
 
 	# Link defs are in the form: ^[id]: url "optional title"
 	while ($text =~ s{
-						^[ \t]*\[(.+)\]:	# id = $1
+						^[ ]{0,$less_than_tab}\[(.+)\]:	# id = $1
 						  [ \t]*
 						  \n?				# maybe *one* newline
 						  [ \t]*
@@ -290,7 +290,7 @@ sub _StripLinkDefinitions {
 						  \n?				# maybe one newline
 						  [ \t]*
 						(?:
-							# Todo: Titles are delimited by "quotes" or (parens).
+							(?<=\s)			# lookbehind for whitespace
 							["(]
 							(.+?)			# title = $3
 							[")]
@@ -311,7 +311,8 @@ sub _StripLinkDefinitions {
 
 
 sub _HashHTMLBlocks {
-	my $text = shift || return '';
+	my $text = shift;
+	my $less_than_tab = $g_tab_width - 1;
 
 	# Hashify HTML blocks:
 	# We only want to do this for block-level HTML tags, such as headers,
@@ -377,11 +378,12 @@ sub _HashHTMLBlocks {
 					\A\n?			# the beginning of the doc
 				)
 				(						# save in $1
-					[ \t]*
+					[ ]{0,$less_than_tab}
 					<(hr)				# start tag = $2
 					\b					# word break
 					([^<>])*?			# 
 					/?>					# the matching end tag
+					[ \t]*
 					(?=\n{2,}|\Z)		# followed by a blank line or end of document
 				)
 			}{
@@ -389,6 +391,30 @@ sub _HashHTMLBlocks {
 				$g_html_blocks{$key} = $1;
 				"\n\n" . $key . "\n\n";
 			}egx;
+
+	# Special case for standalone HTML comments:
+	$text =~ s{
+				(?:
+					(?<=\n\n)		# Starting after a blank line
+					|				# or
+					\A\n?			# the beginning of the doc
+				)
+				(						# save in $1
+					[ ]{0,$less_than_tab}
+					(?s:
+						<!
+						(--.*?--\s*)+
+						>
+					)
+					[ \t]*
+					(?=\n{2,}|\Z)		# followed by a blank line or end of document
+				)
+			}{
+				my $key = md5_hex($1);
+				$g_html_blocks{$key} = $1;
+				"\n\n" . $key . "\n\n";
+			}egx;
+
 
 	return $text;
 }
@@ -399,23 +425,20 @@ sub _RunBlockGamut {
 # These are all the transformations that form block-level
 # tags like paragraphs, headers, and list items.
 #
-	my $text = shift || return '';
+	my $text = shift;
 
 	$text = _DoHeaders($text);
 
 	# Do Horizontal Rules:
-	$text =~ s{^( ?\* ?){3,}$}{\n<hr$g_empty_element_suffix\n}gm;
-	$text =~ s{^( ?- ?){3,}$}{\n<hr$g_empty_element_suffix\n}gm;
-	$text =~ s{^( ?_ ?){3,}$}{\n<hr$g_empty_element_suffix\n}gm;
+	$text =~ s{^[ ]{0,2}([ ]?\*[ ]?){3,}[ \t]*$}{\n<hr$g_empty_element_suffix\n}gmx;
+	$text =~ s{^[ ]{0,2}([ ]? -[ ]?){3,}[ \t]*$}{\n<hr$g_empty_element_suffix\n}gmx;
+	$text =~ s{^[ ]{0,2}([ ]? _[ ]?){3,}[ \t]*$}{\n<hr$g_empty_element_suffix\n}gmx;
 
 	$text = _DoLists($text);
 
 	$text = _DoCodeBlocks($text);
 
 	$text = _DoBlockQuotes($text);
-
-	# Make links out of things like `<http://example.com/>`
-	$text = _DoAutoLinks($text);
 
 	# We already ran _HashHTMLBlocks() before, in Markdown(), but that
 	# was to escape raw HTML in the original Markdown source. This time,
@@ -434,18 +457,23 @@ sub _RunSpanGamut {
 # These are all the transformations that occur *within* block-level
 # tags like paragraphs, headers, and list items.
 #
-	my $text = shift || return '';
+	my $text = shift;
 
 	$text = _DoCodeSpans($text);
 
-	# Fix unencoded ampersands and <'s:
-	$text = _EncodeAmpsAndAngles($text);
+	$text = _EscapeSpecialChars($text);
 
 	# Process anchor and image tags. Images must come first,
 	# because ![foo][f] looks like an anchor.
 	$text = _DoImages($text);
 	$text = _DoAnchors($text);
 
+	# Make links out of things like `<http://example.com/>`
+	# Must come after _DoAnchors(), because you can use < and >
+	# delimiters in inline links like [this](<url>).
+	$text = _DoAutoLinks($text);
+
+	$text = _EncodeAmpsAndAngles($text);
 
 	$text = _DoItalicsAndBold($text);
 
@@ -457,7 +485,7 @@ sub _RunSpanGamut {
 
 
 sub _EscapeSpecialChars {
-	my $text = shift || return '';
+	my $text = shift;
 	my $tokens ||= _TokenizeHTML($text);
 
 	$text = '';   # rebuild $text from the tokens
@@ -489,7 +517,7 @@ sub _DoAnchors {
 #
 # Turn Markdown link shortcuts into XHTML <a> tags.
 #
-	my $text = shift || return '';
+	my $text = shift;
 
 	#
 	# First, handle reference-style links: [link text] [id]
@@ -546,7 +574,7 @@ sub _DoAnchors {
 		  \]
 		  \(			# literal paren
 		  	[ \t]*
-			<?(.+?)>?	# href = $3
+			<?(.*?)>?	# href = $3
 		  	[ \t]*
 			(			# $4
 			  (['"])	# quote char = $5
@@ -586,7 +614,7 @@ sub _DoImages {
 #
 # Turn Markdown image shortcuts into <img> tags.
 #
-	my $text = shift || return '';
+	my $text = shift;
 
 	#
 	# First, handle reference-style labeled images: ![alt text][id]
@@ -688,7 +716,7 @@ sub _DoImages {
 
 
 sub _DoHeaders {
-	my $text = shift || return '';
+	my $text = shift;
 
 	# Setext-style headers:
 	#	  Header 1
@@ -697,13 +725,13 @@ sub _DoHeaders {
 	#	  Header 2
 	#	  --------
 	#
-	$text =~ s{ (.+)[ \t]*\n=+[ \t]*\n+ }{
+	$text =~ s{ ^(.+)[ \t]*\n=+[ \t]*\n+ }{
 		"<h1>"  .  _RunSpanGamut($1)  .  "</h1>\n\n";
-	}egx;
+	}egmx;
 
-	$text =~ s{ (.+)[ \t]*\n-+[ \t]*\n+ }{
+	$text =~ s{ ^(.+)[ \t]*\n-+[ \t]*\n+ }{
 		"<h2>"  .  _RunSpanGamut($1)  .  "</h2>\n\n";
-	}egx;
+	}egmx;
 
 
 	# atx-style headers:
@@ -733,51 +761,123 @@ sub _DoLists {
 #
 # Form HTML ordered (numbered) and unordered (bulleted) lists.
 #
-	my $text = shift || return '';
+	my $text = shift;
 	my $less_than_tab = $g_tab_width - 1;
-	
+
 	# Re-usable patterns to match list item bullets and number markers:
 	my $marker_ul  = qr/[*+-]/;
 	my $marker_ol  = qr/\d+[.]/;
 	my $marker_any = qr/(?:$marker_ul|$marker_ol)/;
 
-	$text =~ s{
-			(								# $1
-			  (								# $2
-			    ^[ ]{0,$less_than_tab}
-			    (${marker_any})				# $3 - first list item marker
-			    [ \t]+
+	# Re-usable pattern to match any entirel ul or ol list:
+	my $whole_list = qr{
+		(								# $1 = whole list
+		  (								# $2
+			[ ]{0,$less_than_tab}
+			(${marker_any})				# $3 = first list item marker
+			[ \t]+
+		  )
+		  (?s:.+?)
+		  (								# $4
+			  \z
+			|
+			  \n{2,}
+			  (?=\S)
+			  (?!						# Negative lookahead for another list item marker
+				[ \t]*
+				${marker_any}[ \t]+
 			  )
-			  (?s:.+?)
-			  (								# $4
-			      \z
-			    |
-				  \n{2,}
-				  (?=\S)
-				  (?!						# Negative lookahead for another list item marker
-				  	[ \t]*
-				  	${marker_any}[ \t]+
-				  )
-			  )
-			)
-		}{
-			my $list = $1;
-			my $list_type = ($3 =~ m/[*+-]/) ? "ul" : "ol";
-			# Turn double returns into triple returns, so that we can make a
-			# paragraph for the last item in a list, if necessary:
-			$list =~ s/\n{2,}/\n\n\n/g;
-			my $result = _ProcessListItems($list, $marker_any);
-			$result = "<$list_type>\n" . $result . "</$list_type>\n\n";
-			$result;
-		}egmx;
+		  )
+		)
+	}mx;
+
+	# We use a different prefix before nested lists than top-level lists.
+	# See extended comment in _ProcessListItems().
+	#
+	# Note: There's a bit of duplication here. My original implementation
+	# created a scalar regex pattern as the conditional result of the test on
+	# $g_list_level, and then only ran the $text =~ s{...}{...}egmx
+	# substitution once, using the scalar as the pattern. This worked,
+	# everywhere except when running under MT on my hosting account at Pair
+	# Networks. There, this caused all rebuilds to be killed by the reaper (or
+	# perhaps they crashed, but that seems incredibly unlikely given that the
+	# same script on the same server ran fine *except* under MT. I've spent
+	# more time trying to figure out why this is happening than I'd like to
+	# admit. My only guess, backed up by the fact that this workaround works,
+	# is that Perl optimizes the substition when it can figure out that the
+	# pattern will never change, and when this optimization isn't on, we run
+	# afoul of the reaper. Thus, the slightly redundant code to that uses two
+	# static s/// patterns rather than one conditional pattern.
+
+	if ($g_list_level) {
+		$text =~ s{
+				^
+				$whole_list
+			}{
+				my $list = $1;
+				my $list_type = ($3 =~ m/$marker_ul/) ? "ul" : "ol";
+				# Turn double returns into triple returns, so that we can make a
+				# paragraph for the last item in a list, if necessary:
+				$list =~ s/\n{2,}/\n\n\n/g;
+				my $result = _ProcessListItems($list, $marker_any);
+				$result = "<$list_type>\n" . $result . "</$list_type>\n";
+				$result;
+			}egmx;
+	}
+	else {
+		$text =~ s{
+				(?:(?<=\n\n)|\A\n?)
+				$whole_list
+			}{
+				my $list = $1;
+				my $list_type = ($3 =~ m/$marker_ul/) ? "ul" : "ol";
+				# Turn double returns into triple returns, so that we can make a
+				# paragraph for the last item in a list, if necessary:
+				$list =~ s/\n{2,}/\n\n\n/g;
+				my $result = _ProcessListItems($list, $marker_any);
+				$result = "<$list_type>\n" . $result . "</$list_type>\n";
+				$result;
+			}egmx;
+	}
+
 
 	return $text;
 }
 
+
 sub _ProcessListItems {
-	my $list_str = shift || return '';
+#
+#	Process the contents of a single ordered or unordered list, splitting it
+#	into individual list items.
+#
+
+	my $list_str = shift;
 	my $marker_any = shift;
-	
+
+
+	# The $g_list_level global keeps track of when we're inside a list.
+	# Each time we enter a list, we increment it; when we leave a list,
+	# we decrement. If it's zero, we're not in a list anymore.
+	#
+	# We do this because when we're not inside a list, we want to treat
+	# something like this:
+	#
+	#		I recommend upgrading to version
+	#		8. Oops, now this line is treated
+	#		as a sub-list.
+	#
+	# As a single paragraph, despite the fact that the second line starts
+	# with a digit-period-space sequence.
+	#
+	# Whereas when we're inside a list (or sub-list), that line will be
+	# treated as the start of a sub-list. What a kludge, huh? This is
+	# an aspect of Markdown's syntax that's hard to parse perfectly
+	# without resorting to mind-reading. Perhaps the solution is to
+	# change the syntax rules such that sub-lists must start with a
+	# starting cardinal number; e.g. "1." or "a.".
+
+	$g_list_level++;
+
 	# trim trailing blank lines:
 	$list_str =~ s/\n{2,}\z/\n/;
 
@@ -796,7 +896,6 @@ sub _ProcessListItems {
 
 		if ($leading_line or ($item =~ m/\n{2,}/)) {
 			$item = _RunBlockGamut(_Outdent($item));
-			#$item =~ s/\n+/\n/g;
 		}
 		else {
 			# Recursion for sub-lists:
@@ -808,6 +907,7 @@ sub _ProcessListItems {
 		"<li>" . $item . "</li>\n";
 	}egmx;
 
+	$g_list_level--;
 	return $list_str;
 }
 
@@ -818,7 +918,7 @@ sub _DoCodeBlocks {
 #	Process Markdown `<pre><code>` blocks.
 #	
 
-	my $text = shift || return '';
+	my $text = shift;
 
 	$text =~ s{
 			(?:\n\n|\A)
@@ -873,7 +973,7 @@ sub _DoCodeSpans {
 #         ... type <code>`bar`</code> ...
 #
 
-	my $text = shift || return '';
+	my $text = shift;
 
 	$text =~ s@
 			(`+)		# $1 = Opening run of `
@@ -882,7 +982,7 @@ sub _DoCodeSpans {
 			\1			# Matching closer
 			(?!`)
 		@
- 			my $c = $2;
+ 			my $c = "$2";
  			$c =~ s/^[ \t]*//g; # leading whitespace
  			$c =~ s/[ \t]*$//g; # trailing whitespace
  			$c = _EncodeCode($c);
@@ -899,11 +999,21 @@ sub _EncodeCode {
 # The point is that in code, these characters are literals,
 # and lose their special Markdown meanings.
 #
-    local $_ = shift || return '';
+    local $_ = shift;
 
 	# Encode all ampersands; HTML entities are not
 	# entities within a Markdown code span.
 	s/&/&amp;/g;
+
+	# Encode $'s, but only if we're running under Blosxom.
+	# (Blosxom interpolates Perl variables in article bodies.)
+	{
+		no warnings 'once';
+    	if (defined($blosxom::version)) {
+    		s/\$/&#036;/g;	
+    	}
+    }
+
 
 	# Do the angle bracket song and dance:
 	s! <  !&lt;!gx;
@@ -923,19 +1033,21 @@ sub _EncodeCode {
 
 
 sub _DoItalicsAndBold {
-	my $text = shift || return '';
+	my $text = shift;
 
 	# <strong> must go first:
-	$text =~ s{ (\*\*|__) (?=\S) (.+?) (?<=\S) \1 }{<strong>$2</strong>}gsx;
-	# Then <em>:
-	$text =~ s{ (\*|_) (?=\S) (.+?) (?<=\S) \1 }{<em>$2</em>}gsx;
+	$text =~ s{ (\*\*|__) (?=\S) (.+?[*_]*) (?<=\S) \1 }
+		{<strong>$2</strong>}gsx;
+
+	$text =~ s{ (\*|_) (?=\S) (.+?) (?<=\S) \1 }
+		{<em>$2</em>}gsx;
 
 	return $text;
 }
 
 
 sub _DoBlockQuotes {
-	my $text = shift || return '';
+	my $text = shift;
 
 	$text =~ s{
 		  (								# Wrap whole match in $1
@@ -951,7 +1063,7 @@ sub _DoBlockQuotes {
 			$bq =~ s/^[ \t]*>[ \t]?//gm;	# trim one level of quoting
 			$bq =~ s/^[ \t]+$//mg;			# trim whitespace-only lines
 			$bq = _RunBlockGamut($bq);		# recurse
-			
+
 			$bq =~ s/^/  /g;
 			# These leading spaces screw with <pre> content, so we need to fix that:
 			$bq =~ s{
@@ -975,14 +1087,13 @@ sub _FormParagraphs {
 #	Params:
 #		$text - string to process with html <p> tags
 #
-	my $text = shift || return '';
+	my $text = shift;
 
 	# Strip leading and trailing lines:
 	$text =~ s/\A\n+//;
 	$text =~ s/\n+\z//;
 
 	my @grafs = split(/\n{2,}/, $text);
-	my $count = scalar @grafs;
 
 	#
 	# Wrap <p> tags.
@@ -1011,7 +1122,7 @@ sub _FormParagraphs {
 sub _EncodeAmpsAndAngles {
 # Smart processing for ampersands and angle brackets that need to be encoded.
 
-	my $text = shift || return '';
+	my $text = shift;
 
 	# Ampersand-encoding based entirely on Nat Irons's Amputator MT plugin:
 	#   http://bumppo.net/projects/amputator/
@@ -1030,7 +1141,7 @@ sub _EncodeBackslashEscapes {
 #   Returns:    The string, with after processing the following backslash
 #               escape sequences.
 #
-    local $_ = shift || return '';
+    local $_ = shift;
 
     s! \\\\  !$g_escape_table{'\\'}!gx;		# Must process escaped backslashes first.
     s! \\`   !$g_escape_table{'`'}!gx;
@@ -1042,7 +1153,10 @@ sub _EncodeBackslashEscapes {
     s! \\\]  !$g_escape_table{']'}!gx;
     s! \\\(  !$g_escape_table{'('}!gx;
     s! \\\)  !$g_escape_table{')'}!gx;
+    s! \\>   !$g_escape_table{'>'}!gx;
     s! \\\#  !$g_escape_table{'#'}!gx;
+    s! \\\+  !$g_escape_table{'+'}!gx;
+    s! \\\-  !$g_escape_table{'-'}!gx;
     s! \\\.  !$g_escape_table{'.'}!gx;
     s{ \\!  }{$g_escape_table{'!'}}gx;
 
@@ -1051,13 +1165,14 @@ sub _EncodeBackslashEscapes {
 
 
 sub _DoAutoLinks {
-	my $text = shift || return '';
+	my $text = shift;
 
 	$text =~ s{<((https?|ftp):[^'">\s]+)>}{<a href="$1">$1</a>}gi;
 
 	# Email addresses: <address@domain.foo>
 	$text =~ s{
 		<
+        (?:mailto:)?
 		(
 			[-.\w]+
 			\@
@@ -1088,7 +1203,7 @@ sub _EncodeEmailAddress {
 #	mailing list: <http://tinyurl.com/yu7ue>
 #
 
-	my $addr = shift || return '';
+	my $addr = shift;
 
 	srand;
 	my @encode = (
@@ -1128,7 +1243,7 @@ sub _UnescapeSpecialChars {
 #
 # Swap back in all the special characters we've hidden.
 #
-	my $text = shift || return '';
+	my $text = shift;
 
 	while( my($char, $hash) = each(%g_escape_table) ) {
 		$text =~ s/$hash/$char/g;
@@ -1152,7 +1267,7 @@ sub _TokenizeHTML {
 #       <http://www.bradchoate.com/past/mtregex.php>
 #
 
-    my $str = shift || return '';
+    my $str = shift;
     my $pos = 0;
     my $len = length $str;
     my @tokens;
@@ -1182,7 +1297,7 @@ sub _Outdent {
 #
 # Remove one level of line-leading tabs or spaces
 #
-	my $text = shift || return '';
+	my $text = shift;
 
 	$text =~ s/^(\t|[ ]{1,$g_tab_width})//gm;
 	return $text;
@@ -1194,7 +1309,7 @@ sub _Detab {
 # Cribbed from a post by Bart Lateur:
 # <http://www.nntp.perl.org/group/perl.macperl.anyperl/154>
 #
-	my $text = shift || return '';
+	my $text = shift;
 
 	$text =~ s{(.*?)\t}{$1.(' ' x ($g_tab_width - length($1) % $g_tab_width))}ge;
 	return $text;
@@ -1283,202 +1398,20 @@ you expected; (3) the output Markdown actually produced.
 
 =head1 VERSION HISTORY
 
-	1.0:
-	
-	+	Blockquote contents are once again indented by two spaces,
-		and `<pre>` content is special-cased.
+See the readme file for detailed release notes for this version.
 
-	1.0fc2:
-	
-	+	Disabled the 'use utf8' pragma, which caused crashes for people
-		running Markdown on Perl 5.6.1.
+1.0.1 - 14 Dec 2004
 
-	+	Fixed a couple of bugs in _DoLists() and _ProcessListItems() that
-		caused unordered lists starting with `+` or `-` to be turned into
-		*ordered* lists.
-	
-	+	Added to the list of block-level HTML tags:
-
-			noscript, form, fieldset, iframe, math
-	
-	+	Fixed an odd bug where, with input like this:
-
-			> This line starts the blockquote
-			* This list is part of the quote.
-			* Second item.
-			
-			This paragraph is not part of the blockquote.
-
-		The trailing paragraph was incorrectly included in the
-		blockquote. (The solution was to add an extra "\n" after
-		lists.)
-	
-	+	The contents of `<blockquote>` tags are no longer indented
-		in the HTML output. It made the source look neater, but
-		screwed with any `<pre>` blocks in the blockquote.
-	
-	+	When running under MT 3.0 or later, now displays version number
-		in the Markdown info on the main screen.
-
-
-	1.0fc1:
-	
-	+	Added some MT 3.0 stuff to register the plug-in in the MT web UI.
-		This should not prevent Markdown from running under MT 2.6.
-
-	+	Greatly simplified the rules for code blocks. No more colons
-		necessary; if it's indented (4 spaces or 1 tab), it's a code block.
-	
-	+	Unordered list items can now be denoted by any of the following
-		bullet markers: [*+-]
-	
-	+	_DoCodeSpans() now uses a much simpler regex pattern. Thanks to
-		Michel Fortin for the patch.
-
-	*	s/"/&quot;/g  to fix literal quotes within title attributes.
-
-	1.0b9:
-
-	*	s/"/&quot;/g  to fix literal quotes within img alt attributes.
-
-	1.0b8:
-
-	*	Tweaked file slurping syntax.
-
-	*	Added 'math' tags to block-level tag patterns in _HashHTMLBlocks().
-		Please disregard all the 'math'-tag related items in 1.0b7.
-		
-	*	Commented out some vestigial code in _EscapeSpecialChars()
-
-	1.0b7:
-
-	*	Added 'math' to $tags_to_skip pattern, for MathML users.
-
-	*	Tweaked regex for identifying HTML entities in
-		_EncodeAmpsAndAngles(), so as to allow for the very long entity
-		names used by MathML. (Thanks to Jacques Distler for the patch.)
-
-	*	_DoCodeSpans() now uses 'no strict' inside the ??{} construct
-		in the regex pattern, which (the addition of 'no strict') allows
-		us to use $backtick_count as an undeclared variable. Perl 5.8.4
-		complains without a 'my' here under 'use strict', but earlier
-		versions of Perl *won't* allow 'my' here. Bizarrely, the
-		opposite is true of 'local', which works fine under Perl 5.6.1 -
-		5.8.3, but doesn't work under Perl 5.8.4.
-	
-	*	All the internal subroutines now return an empty string if
-		called without a text parameter. It's my hope that this will
-		let Markdown.pl work better under Perl 5.6.0.
-
-	1.0b6:
-
-	*	<MTMarkdownOptions> is now a container tag.
-
-	*	"raw" mode for plaintext output in MT, using
-		MarkdownOptions container tag:
-
-			<MTMarkdownOptions output='raw'>
-			...
-			</MTMarkdownOptions>
-
-	*	Changed name of '--htmltags' CLI switch to '--html4tags'
-
-	1.0b5: 
-
-	*	If Markdown() is called without a string parameter, it now
-		returns an empty string. Previously, it'd generate warnings.
-		This should never happen, but there's no harm in safeguarding
-		against it.
-
-	*	Workaround for supporting <ins> and <del> as block-level tags.
-		This only works if the start and end tags are on lines by
-		themselves.
-
-	*	Three or more underscores can now be used for horizontal rules.
-
-	*	Lines containing only whitespace are trimmed from blockquotes.
-
-	*	You can now optionally wrap URLs with angle brackets -- like so:
-		`<http://example.com>` -- in link definitions and inline links and
-		images.
-
-	*	`_` and `*` characters in links and images are no longer escaped
-		as HTML entities. Instead, we use the ridiculous but effective MD5
-		hashing trick that's used to hide these characters elsewhere. The
-		end result is that the HTML output uses the literal `*` and `_`
-		characters, rather than the ugly entities.
-
-
-	1.0b4: Thu 25 Mar 2004
-
-	*	Fixed bug where a paragraph with multiple inline links or images
-		-- i.e. [links like this](url "title") -- parsed incorrectly. The
-		regex to match title strings was greedy, but shouldn't have been.
-
-	*	Much improved Blosxom interface: no longer processes Blosxom
-		titles; now offers optional integration with meta plug-in, so that
-		one can specify Markdown on a per-post basis. Thanks to Jason
-		Clark <http://jclark.org/weblog/>.
-
-	*	Ampersands in defined links are now encoded as `&amp;` when
-		necessary. E.g., if you define this:
-
-			[1]: /foo&bar
-
-		the resulting href attribute will point to "/foo&amp;bar"
-
-	*	Implicit reference ID shortcut is now hooked up for img's:
-
-			![alt text][]
-
-	*	Markdown now allows for a newline break between [link text]
-		[id], as in this sentence. (In both links and images.)
-
-	*	Underscores and asterisks within automatic links no longer show
-		up in the output as MD5 hash values.
-
-
-
-	1.0b3: Fri 12 Mar 2004
-
-	*	Fixed tiny bug where link and image id references were
-		being treated case sensitively.
-
-
-
-	1.0b2: Fri 12 Mar 2004
-
-	*	Fixed bug in code spans where ampersands were getting
-		double-encoded.
-
-	*	Lines with nothing but ">" characters (i.e. blank
-		lines in a blockquote) aren't stripped until we're
-		actually processing blockquotes. This makes it possible
-		to include a line with nothing but a ">" in a code
-		block now.
-
-	*	Fixed a minor parsing glitch with inline HTML blocks which
-		have trailing spaces or tabs after the closing tag. You'd
-		end up with an empty `<p></p>` after the tag.
-
-	*	Markdown now clears its hash table of defined link references
-		at the beginning of each article it processes. This solves
-		a bug where links defined in article A could be "seen" in
-		article B if both both articles appeared on the same page
-		(e.g. an index page that displays the most recent entries).
-
-
-
-    1.0b1: Tue 9 Mar 2004
-
-        Initial public release.
-
+1.0 - 28 Aug 2004
 
 
 =head1 AUTHOR
 
     John Gruber
     http://daringfireball.net
+
+    PHP port and other contributions by Michel Fortin
+    http://michelf.com
 
 
 =head1 COPYRIGHT AND LICENSE
@@ -1487,14 +1420,31 @@ Copyright (c) 2003-2004 John Gruber
 <http://daringfireball.net/>   
 All rights reserved.
 
-Markdown is free software; you can redistribute it and/or modify it
-under the terms of the GNU General Public License as published by the
-Free Software Foundation; either version 2 of the License, or (at your
-option) any later version.
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
 
-Markdown is distributed in the hope that it will be useful, but WITHOUT
-ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-for more details.
+* Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright
+  notice, this list of conditions and the following disclaimer in the
+  documentation and/or other materials provided with the distribution.
+
+* Neither the name "Markdown" nor the names of its contributors may
+  be used to endorse or promote products derived from this software
+  without specific prior written permission.
+
+This software is provided by the copyright holders and contributors "as
+is" and any express or implied warranties, including, but not limited
+to, the implied warranties of merchantability and fitness for a
+particular purpose are disclaimed. In no event shall the copyright owner
+or contributors be liable for any direct, indirect, incidental, special,
+exemplary, or consequential damages (including, but not limited to,
+procurement of substitute goods or services; loss of use, data, or
+profits; or business interruption) however caused and on any theory of
+liability, whether in contract, strict liability, or tort (including
+negligence or otherwise) arising in any way out of the use of this
+software, even if advised of the possibility of such damage.
 
 =cut
